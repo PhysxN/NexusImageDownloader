@@ -1,0 +1,46 @@
+﻿<Window x:Class="NexusDownloader.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Nexus Image Downloader" Height="1000" Width="1300">
+
+    <Grid Margin="10">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="2*"/>
+            <RowDefinition Height="5"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBox Grid.Row="0"
+             x:Name="UrlBox"
+             Height="28"
+             Text="https://www.nexusmods.com/profile/ppaseho1223"/>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,5">
+            <Button Content="Open" Click="Open_Click" Width="100"/>
+            <Button Content="ULTRA FAST"
+        Click="UltraFast_Click"
+        Width="120"
+        Margin="5,0"/>            
+            <TextBox x:Name="GameIdBox" Width="90" Margin="5,0"
+         ToolTip="gameId (optional)"/>
+        </StackPanel>
+
+        <wv2:WebView2 Grid.Row="2" x:Name="web" Height="420"/>
+        <GridSplitter Grid.Row="3"
+              Height="5"
+              HorizontalAlignment="Stretch"
+              VerticalAlignment="Center"
+              Background="#444"/>
+
+        <TextBox Grid.Row="4"
+         x:Name="LogBox"
+         AcceptsReturn="True"
+         TextWrapping="Wrap"
+         VerticalScrollBarVisibility="Auto"/>
+
+    </Grid>
+</Window>
