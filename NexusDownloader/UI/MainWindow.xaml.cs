@@ -18,10 +18,11 @@ namespace NexusDownloader.UI
     {
         private NexusSession _session;
         private NexusMediaService _media;
-        private MediaDownloader _downloader;
+        private MediaDownloader? _downloader;
 
         private int _totalImages;
         private int _activeDownloads;
+        
 
         private readonly SemaphoreSlim _downloadLimiter = new SemaphoreSlim(32);
         private readonly SemaphoreSlim _gqlLimiter = new SemaphoreSlim(6);
@@ -33,7 +34,6 @@ namespace NexusDownloader.UI
 
             _session = new NexusSession(web);
             _media = new NexusMediaService(_gqlLimiter);
-            _downloader = new MediaDownloader(_downloadLimiter);
         }
 
         private async void Open_Click(object sender, RoutedEventArgs e)
@@ -88,43 +88,72 @@ namespace NexusDownloader.UI
             Log("Select game, then press ULTRA FAST.");
         }
 
+        private string SafeFolder(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "_Unknown";
 
+            foreach (var c in System.IO.Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+
+            return name.Trim();
+        }
 
         private async void UltraFast_Click(object sender, RoutedEventArgs e)
         {
-            _totalImages = 0;
-            _downloader.Downloaded = 0;
+            SetUiEnabled(false);
 
-            var sw = Stopwatch.StartNew();
-
-            var http = await _session.CreateHttpClientAsync();
-
-            await _session.WaitAvatar();
-            await _session.WaitDomReady();
-
-            var authorId = await _session.DetectAuthorId();
-
-            if (string.IsNullOrEmpty(authorId))
+            try
             {
-                Log("author detect fail");
-                return;
+                _totalImages = 0;
+
+                var sw = Stopwatch.StartNew();
+
+                var http = await _session.CreateHttpClientAsync();
+
+                await _session.WaitAvatar();
+                await _session.WaitDomReady();
+
+                var authorId = await _session.DetectAuthorId();
+
+                if (string.IsNullOrEmpty(authorId))
+                {
+                    Log("author detect fail");
+                    return;
+                }
+
+                Log("author = " + authorId);
+
+                string nick = SafeFolder(NormalizeProfileInput(UrlBox.Text));
+
+                var selected = GameBox.SelectedItem as GameFacet;
+                string game = SafeFolder(selected?.Name ?? "_AllGames");
+
+                _downloader = new MediaDownloader(_downloadLimiter, game, nick);
+                _downloader.Downloaded = 0;
+
+                string folder = Path.Combine(AppContext.BaseDirectory, "Images", game, nick);
+                Directory.CreateDirectory(folder);
+
+                var existing = GetExistingFiles(folder);
+
+                await ProcessAllMedia(http, authorId, folder, existing);
+
+                Log("need download = " + _totalImages);
+
+                await WaitDownloadsFinish();
+
+                sw.Stop();
+
+                Log($"DONE {_downloader?.Downloaded ?? 0} in {sw.Elapsed:mm\\:ss\\.fff}");
+                Log($"speed: {((_downloader?.Downloaded ?? 0) / sw.Elapsed.TotalSeconds):F2} img/sec");
+                if (_downloader != null)
+                    Log($"adaptive delay peak = {_downloader.MaxDelay} ms");
             }
-
-            Log("author = " + authorId);
-
-            string folder = PrepareFolder();
-            var existing = GetExistingFiles(folder);
-
-            await ProcessAllMedia(http, authorId, folder, existing);
-
-            Log("need download = " + _totalImages);
-
-            await WaitDownloadsFinish();
-
-            sw.Stop();
-
-            Log($"DONE {_downloader.Downloaded} in {sw.Elapsed:mm\\:ss\\.fff}");
-            Log($"speed: {(_downloader.Downloaded / sw.Elapsed.TotalSeconds):F2} img/sec");
+            finally
+            {
+                SetUiEnabled(true);
+            }
         }
 
         private async Task ProcessAllMedia(System.Net.Http.HttpClient http, string authorId, string folder, HashSet<string> existing)
@@ -210,14 +239,19 @@ namespace NexusDownloader.UI
             }
         }
 
-        private async Task DownloadWrapper(System.Net.Http.HttpClient http, string url, string file)
+        private async Task DownloadWrapper(HttpClient http, string url, string file)
         {
+            var downloader = _downloader;
+
+            if (downloader == null)
+                return;
+
             try
             {
-                await _downloader.Download(http, url, file);
+                await downloader.Download(http, url, file);
 
-                if (_downloader.Downloaded % 50 == 0)
-                    Log($"saved {_downloader.Downloaded}/{_totalImages}");
+                if (downloader.Downloaded % 50 == 0)
+                    Log($"saved {downloader.Downloaded}/{_totalImages}");
             }
             finally
             {
@@ -302,5 +336,17 @@ namespace NexusDownloader.UI
                 LogBox.ScrollToEnd();
             });
         }
+
+        private void SetUiEnabled(bool enabled)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                OpenButton.IsEnabled = enabled;
+                UltraFastButton.IsEnabled = enabled;
+                UrlBox.IsEnabled = enabled;
+                GameBox.IsEnabled = enabled;
+            });
+        }
+
     }
 }

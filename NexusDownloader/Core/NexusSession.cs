@@ -20,22 +20,32 @@ namespace NexusDownloader.Core
 
         public async Task InitAsync()
         {
+            if (_web.CoreWebView2 is not null)
+                return;
+
             var profile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "NexusDownloaderWebView");
 
             var env = await CoreWebView2Environment.CreateAsync(null, profile);
+
             await _web.EnsureCoreWebView2Async(env);
 
-            _web.CoreWebView2.NewWindowRequested += (s, ev) =>
+            var core = _web.CoreWebView2
+                ?? throw new InvalidOperationException("WebView2 init failed");
+
+            core.NewWindowRequested += (s, ev) =>
             {
                 ev.Handled = true;
-                _web.CoreWebView2.Navigate(ev.Uri);
+                core.Navigate(ev.Uri);
             };
         }
 
         public async Task<HttpClient> CreateHttpClientAsync()
         {
+            if (_web.CoreWebView2 == null)
+                throw new InvalidOperationException("WebView2 is not initialized");
+
             var cookies = await _web.CoreWebView2.CookieManager.GetCookiesAsync(null);
 
             var handler = new SocketsHttpHandler
@@ -64,6 +74,8 @@ namespace NexusDownloader.Core
 
         public async Task WaitDomReady()
         {
+            if (_web.CoreWebView2 == null)
+                throw new InvalidOperationException("WebView2 not initialized");
             while (true)
             {
                 var state = await _web.ExecuteScriptAsync("document.readyState");
@@ -76,6 +88,8 @@ namespace NexusDownloader.Core
 
         public async Task WaitAvatar()
         {
+            if (_web.CoreWebView2 == null)
+                throw new InvalidOperationException("WebView2 not initialized");
             for (int i = 0; i < 120; i++)
             {
                 var exists = await _web.ExecuteScriptAsync(
@@ -90,6 +104,8 @@ namespace NexusDownloader.Core
 
         public async Task<string?> DetectAuthorId()
         {
+            if (_web.CoreWebView2 == null)
+                throw new InvalidOperationException("WebView2 not initialized");
             var raw = await _web.ExecuteScriptAsync(@"
                 Array.from(document.querySelectorAll('img[src*=""avatars.nexusmods.com""]'))
                 .map(i => i.src).join('|')");

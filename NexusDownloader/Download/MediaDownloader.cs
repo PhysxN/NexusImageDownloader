@@ -10,26 +10,29 @@ namespace NexusDownloader.Download
     public class MediaDownloader
     {
         private readonly SemaphoreSlim _limiter;
+        public int Downloaded;
         private readonly string _tempFolder;
         private readonly SemaphoreSlim _convertLimiter = new SemaphoreSlim(4);
+        private int _delayMs = 0;
+        private int _maxDelayMs = 0;
+        public int MaxDelay => _maxDelayMs;
+        private int _slowResponses = 0;
+        private int _fastResponses = 0;
+        private readonly object _adaptiveLock = new object();
+        public int CurrentDelay => _delayMs;
 
-        public int Downloaded;
-
-        public MediaDownloader(SemaphoreSlim limiter)
+        public MediaDownloader(SemaphoreSlim limiter, string game, string author)
         {
             _limiter = limiter;
 
-            _tempFolder = Path.Combine(Environment.CurrentDirectory, "Temp");
+            _tempFolder = Path.Combine(AppContext.BaseDirectory, "Temp", game, author);
 
             try
             {
                 if (Directory.Exists(_tempFolder))
                     Directory.Delete(_tempFolder, true);
             }
-            catch
-            {
-                // если файлы заняты — просто игнорируем
-            }
+            catch { }
 
             Directory.CreateDirectory(_tempFolder);
         }
@@ -49,9 +52,43 @@ namespace NexusDownloader.Download
                 {
                     try
                     {
+                        if (_delayMs > 0)
+                            await Task.Delay(_delayMs);
+
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+
                         using var resp = await http.GetAsync(
                             url,
                             HttpCompletionOption.ResponseHeadersRead);
+
+                        sw.Stop();
+
+                        lock (_adaptiveLock)
+                        {
+                            if (sw.ElapsedMilliseconds > 1200)
+                            {
+                                _slowResponses++;
+                                _fastResponses = 0;
+                            }
+                            else
+                            {
+                                _fastResponses++;
+                                _slowResponses = 0;
+                            }
+
+                            if (_slowResponses >= 4)
+                            {
+                                _delayMs = Math.Min(_delayMs + 25, 250);
+                                _maxDelayMs = Math.Max(_maxDelayMs, _delayMs);
+                                _slowResponses = 0;
+                            }
+
+                            if (_fastResponses >= 6)
+                            {
+                                _delayMs = Math.Max(_delayMs - 10, 0);
+                                _fastResponses = 0;
+                            }
+                        }
 
                         if (!resp.IsSuccessStatusCode)
                             continue;
@@ -85,13 +122,16 @@ namespace NexusDownloader.Download
 
                         File.Move(tempPath, finalTempFile, true);
 
-                        // ✔ освобождаем download limiter раньше
+                        // освобождаем limiter сразу
                         _limiter.Release();
 
-                        // ✔ конвертация отдельно
                         _ = ProcessAfterDownload(finalTempFile, file, ext);
 
-                        Interlocked.Increment(ref Downloaded);
+                        int d = Interlocked.Increment(ref Downloaded);
+
+                        if (d % 100 == 0)
+                            System.Diagnostics.Debug.WriteLine($"adaptive delay = {_delayMs} ms");
+
                         return;
                     }
                     catch
@@ -105,8 +145,7 @@ namespace NexusDownloader.Download
             }
             finally
             {
-                if (_limiter.CurrentCount == 0)
-                    _limiter.Release();
+                // limiter уже освобождён выше
             }
         }
 
@@ -120,12 +159,10 @@ namespace NexusDownloader.Download
 
                     try
                     {
-                        string jpgTemp = Path.ChangeExtension(tempFile, ".jpg");
-
                         await ImageConverter.ConvertWebpToJpg(tempFile);
 
                         string finalPath = Path.ChangeExtension(targetBase, ".jpg");
-                        File.Move(jpgTemp, finalPath, true);
+                        File.Move(Path.ChangeExtension(tempFile, ".jpg"), finalPath, true);
                     }
                     finally
                     {
@@ -140,7 +177,7 @@ namespace NexusDownloader.Download
             }
             catch
             {
-                // если что-то пошло не так — temp просто останется
+                // temp просто останется
             }
         }
 

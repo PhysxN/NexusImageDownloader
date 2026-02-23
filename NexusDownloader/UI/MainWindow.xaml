@@ -26,8 +26,8 @@
           HorizontalAlignment="Left"/>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,5">
-            <Button Content="Open" Click="Open_Click" Width="100"/>
-            <Button Content="ULTRA FAST"
+            <Button x:Name="OpenButton" Content="Open" Click="Open_Click" Width="100"/>
+            <Button x:Name="UltraFastButton" Content="ULTRA FAST"
         Click="UltraFast_Click"
         Width="120"
         Margin="5,0"/>            
