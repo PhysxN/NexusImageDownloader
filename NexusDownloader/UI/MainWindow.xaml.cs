@@ -22,9 +22,9 @@ namespace NexusDownloader.UI
 
         private int _totalImages;
         private int _activeDownloads;
-        
 
-        private readonly SemaphoreSlim _downloadLimiter = new SemaphoreSlim(32);
+
+        private readonly AdaptiveLimiter _adaptiveLimiter = new AdaptiveLimiter(32, 8, 48);
         private readonly SemaphoreSlim _gqlLimiter = new SemaphoreSlim(6);
         private NexusGamesService _games = new NexusGamesService();
         private NexusCookieSession _cookieSession;
@@ -61,7 +61,7 @@ namespace NexusDownloader.UI
 
             Log("Loading profile...");
             await Task.Delay(500);
-            await _session.WaitAvatar();
+            
             await _session.WaitDomReady();
 
             var authorId = await _session.DetectAuthorId();
@@ -136,7 +136,7 @@ namespace NexusDownloader.UI
 
                 var http = await _cookieSession.CreateHttpClientAsync();
                 await Task.Delay(500);
-                await _session.WaitAvatar();
+                
                 await _session.WaitDomReady();
 
                 var authorId = await _session.DetectAuthorId();
@@ -153,8 +153,9 @@ namespace NexusDownloader.UI
 
                 var selected = GameBox.SelectedItem as GameFacet;
                 string game = SafeFolder(selected?.Name ?? "_AllGames");
+                ClearTemp(game, nick);
 
-                _downloader = new MediaDownloader(_downloadLimiter, game, nick);
+                _downloader = new MediaDownloader(_adaptiveLimiter.Semaphore, game, nick);
                 _downloader.Downloaded = 0;
 
                 string folder = Path.Combine(AppContext.BaseDirectory, "Images", game, nick);
@@ -276,7 +277,19 @@ namespace NexusDownloader.UI
                 await downloader.Download(http, url, file);
 
                 if (downloader.Downloaded % 50 == 0)
-                    Log($"saved {downloader.Downloaded}/{_totalImages}");
+                    Log($"saved {downloader.Downloaded}/{_totalImages}  delay={downloader.CurrentDelay}");
+
+                if (downloader.CurrentDelay >= 240)
+                    await Task.Delay(1200 + Random.Shared.Next(400));
+
+                // глобальный анти-stall cooldown
+                if (downloader.CurrentDelay >= 240 && Volatile.Read(ref _activeDownloads) < 6)
+                {
+                    Log("CDN cooldown...");
+                    await Task.Delay(5000);
+                }
+
+                _adaptiveLimiter.Update(downloader.CurrentDelay);
             }
             finally
             {
@@ -387,7 +400,17 @@ namespace NexusDownloader.UI
             web.Source = new Uri(BuildMediaUrl(1));
         }
 
+        private void ClearTemp(string game, string author)
+        {
+            try
+            {
+                string temp = Path.Combine(AppContext.BaseDirectory, "Temp", author);
 
+                if (Directory.Exists(temp))
+                    Directory.Delete(temp, true);
+            }
+            catch { }
+        }
 
     }
 }

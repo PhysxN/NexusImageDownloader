@@ -59,9 +59,12 @@ namespace NexusDownloader.Download
 
                         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(32));
+
                         using var resp = await http.GetAsync(
                             url,
-                            HttpCompletionOption.ResponseHeadersRead);
+                            HttpCompletionOption.ResponseHeadersRead,
+                            cts.Token);
 
                         sw.Stop();
 
@@ -112,7 +115,7 @@ namespace NexusDownloader.Download
 
                         tempPath = finalTempFile + ".tmp";
 
-                        using var stream = await resp.Content.ReadAsStreamAsync();
+                        using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
                         using (var fs = File.Create(tempPath))
                             await stream.CopyToAsync(fs);
 
