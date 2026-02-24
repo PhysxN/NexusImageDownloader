@@ -42,6 +42,7 @@ namespace NexusDownloader.Download
         public async Task Download(HttpClient http, string url, string file)
         {
             await _limiter.WaitAsync();
+            bool limiterReleased = false;
 
             string? tempPath = null;
             string? finalTempFile = null;
@@ -52,8 +53,9 @@ namespace NexusDownloader.Download
                 {
                     try
                     {
-                        if (_delayMs > 0)
-                            await Task.Delay(_delayMs);
+                        int delay = CurrentDelay;
+                        if (delay > 0)
+                            await Task.Delay(delay);
 
                         var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -124,8 +126,9 @@ namespace NexusDownloader.Download
 
                         // освобождаем limiter сразу
                         _limiter.Release();
+                        limiterReleased = true;
 
-                        _ = ProcessAfterDownload(finalTempFile, file, ext);
+                        Forget(ProcessAfterDownload(finalTempFile, file, ext));
 
                         int d = Interlocked.Increment(ref Downloaded);
 
@@ -145,7 +148,8 @@ namespace NexusDownloader.Download
             }
             finally
             {
-                // limiter уже освобождён выше
+                if (!limiterReleased)
+                    _limiter.Release();
             }
         }
 
@@ -163,6 +167,11 @@ namespace NexusDownloader.Download
 
                         string finalPath = Path.ChangeExtension(targetBase, ".jpg");
                         File.Move(Path.ChangeExtension(tempFile, ".jpg"), finalPath, true);
+
+                        var jpg = Path.ChangeExtension(tempFile, ".jpg");
+
+                        if (File.Exists(jpg))
+                            File.Move(jpg, finalPath, true);
                     }
                     finally
                     {
@@ -179,6 +188,13 @@ namespace NexusDownloader.Download
             {
                 // temp просто останется
             }
+        }
+
+        private static void Forget(Task task)
+        {
+            _ = task.ContinueWith(
+                t => { var _ = t.Exception; },
+                TaskContinuationOptions.OnlyOnFaulted);
         }
 
     }

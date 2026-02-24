@@ -16,7 +16,7 @@ namespace NexusDownloader.UI
 {
     public partial class MainWindow : Window
     {
-        private NexusSession _session;
+        private readonly NexusSession _session;
         private NexusMediaService _media;
         private MediaDownloader? _downloader;
 
@@ -27,6 +27,8 @@ namespace NexusDownloader.UI
         private readonly SemaphoreSlim _downloadLimiter = new SemaphoreSlim(32);
         private readonly SemaphoreSlim _gqlLimiter = new SemaphoreSlim(6);
         private NexusGamesService _games = new NexusGamesService();
+        private NexusCookieSession _cookieSession;
+        private bool _loginHandled;
 
         public MainWindow()
         {
@@ -34,16 +36,31 @@ namespace NexusDownloader.UI
 
             _session = new NexusSession(web);
             _media = new NexusMediaService(_gqlLimiter);
+            _cookieSession = new NexusCookieSession(web);
+
+            web.NavigationCompleted += Web_NavigationCompleted;
         }
 
         private async void Open_Click(object sender, RoutedEventArgs e)
         {
+            _loginHandled = false;
+
             await _session.InitAsync();
+
+            if (!await _cookieSession.IsLoggedAsync())
+            {
+                Log("Login required — please login in the embedded browser.");
+
+                web.Source = new Uri("https://users.nexusmods.com/auth/sign_in");
+                return;
+            }
+
+            Log("Logged in.");
 
             web.Source = new Uri(BuildMediaUrl(1));
 
-            Log("Login if needed...");
-
+            Log("Loading profile...");
+            await Task.Delay(500);
             await _session.WaitAvatar();
             await _session.WaitDomReady();
 
@@ -57,17 +74,16 @@ namespace NexusDownloader.UI
 
             Log("author = " + authorId);
 
-            var http = await _session.CreateHttpClientAsync();
+            var http = await _cookieSession.CreateHttpClientAsync();
 
             try
             {
                 await _games.LoadGameNames(http);
-
                 var list = await _games.LoadGames(http, authorId);
 
                 GameBox.Items.Clear();
 
-                GameBox.Items.Add(new Models.GameFacet
+                GameBox.Items.Add(new GameFacet
                 {
                     Id = null,
                     Name = $"All games ({list.Sum(x => x.Count)})"
@@ -84,6 +100,7 @@ namespace NexusDownloader.UI
             {
                 Log("games load failed");
             }
+
             UrlBox.Text = NormalizeProfileInput(UrlBox.Text);
             Log("Select game, then press ULTRA FAST.");
         }
@@ -101,6 +118,14 @@ namespace NexusDownloader.UI
 
         private async void UltraFast_Click(object sender, RoutedEventArgs e)
         {
+            await _session.InitAsync();            
+
+            if (!await _cookieSession.IsLoggedAsync())
+            {
+                Log("Login required.");
+                return;
+            }
+
             SetUiEnabled(false);
 
             try
@@ -109,8 +134,8 @@ namespace NexusDownloader.UI
 
                 var sw = Stopwatch.StartNew();
 
-                var http = await _session.CreateHttpClientAsync();
-
+                var http = await _cookieSession.CreateHttpClientAsync();
+                await Task.Delay(500);
                 await _session.WaitAvatar();
                 await _session.WaitDomReady();
 
@@ -347,6 +372,22 @@ namespace NexusDownloader.UI
                 GameBox.IsEnabled = enabled;
             });
         }
+
+        private async void Web_NavigationCompleted(object? sender, EventArgs e)
+        {
+            if (_loginHandled || web.Source == null)
+                return;
+
+            if (!await _cookieSession.IsLoggedAsync())
+                return;
+
+            _loginHandled = true;
+
+            Log("Login detected.");
+            web.Source = new Uri(BuildMediaUrl(1));
+        }
+
+
 
     }
 }

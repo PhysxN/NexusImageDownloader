@@ -33,44 +33,15 @@ namespace NexusDownloader.Core
 
             var core = _web.CoreWebView2
                 ?? throw new InvalidOperationException("WebView2 init failed");
+            core.Settings.IsGeneralAutofillEnabled = false;
+            core.Settings.IsPasswordAutosaveEnabled = false;
 
             core.NewWindowRequested += (s, ev) =>
             {
                 ev.Handled = true;
                 core.Navigate(ev.Uri);
             };
-        }
-
-        public async Task<HttpClient> CreateHttpClientAsync()
-        {
-            if (_web.CoreWebView2 == null)
-                throw new InvalidOperationException("WebView2 is not initialized");
-
-            var cookies = await _web.CoreWebView2.CookieManager.GetCookiesAsync(null);
-
-            var handler = new SocketsHttpHandler
-            {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                MaxConnectionsPerServer = 200,
-                UseCookies = true,
-                CookieContainer = new CookieContainer()
-            };
-
-            foreach (var c in cookies)
-            {
-                try
-                {
-                    handler.CookieContainer.Add(new Cookie(c.Name, c.Value, c.Path, c.Domain));
-                }
-                catch { }
-            }
-
-            var http = new HttpClient(handler);
-            http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-            http.DefaultRequestVersion = HttpVersion.Version20;
-
-            return http;
-        }
+        }        
 
         public async Task WaitDomReady()
         {
@@ -122,6 +93,7 @@ namespace NexusDownloader.Core
                 .GroupBy(m => m.Groups[1].Value)
                 .OrderByDescending(g => g.Count())
                 .First().Key;
-        }
+        }        
+
     }
 }
