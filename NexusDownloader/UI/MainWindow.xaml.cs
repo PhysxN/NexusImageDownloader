@@ -29,6 +29,10 @@ namespace NexusDownloader.UI
         private NexusGamesService _games = new NexusGamesService();
         private NexusCookieSession _cookieSession;
         private bool _loginHandled;
+        private HttpClient? _http;
+        private DateTime _lastClientReset = DateTime.MinValue;
+        private int _burstGuard;
+        private int _clientResetGuard;
 
         public MainWindow()
         {
@@ -74,7 +78,8 @@ namespace NexusDownloader.UI
 
             Log("author = " + authorId);
 
-            var http = await _cookieSession.CreateHttpClientAsync();
+            _http ??= await _cookieSession.CreateHttpClientAsync();
+            var http = _http!;
 
             try
             {
@@ -134,7 +139,8 @@ namespace NexusDownloader.UI
 
                 var sw = Stopwatch.StartNew();
 
-                var http = await _cookieSession.CreateHttpClientAsync();
+                _http ??= await _cookieSession.CreateHttpClientAsync();
+                
                 await Task.Delay(500);
                 
                 await _session.WaitDomReady();
@@ -163,7 +169,7 @@ namespace NexusDownloader.UI
 
                 var existing = GetExistingFiles(folder);
 
-                await ProcessAllMedia(http, authorId, folder, existing);
+                await ProcessAllMedia(authorId, folder, existing);
 
                 Log("need download = " + _totalImages);
 
@@ -182,7 +188,7 @@ namespace NexusDownloader.UI
             }
         }
 
-        private async Task ProcessAllMedia(System.Net.Http.HttpClient http, string authorId, string folder, HashSet<string> existing)
+        private async Task ProcessAllMedia(string authorId, string folder, HashSet<string> existing)
         {
             int count = 20;
             int offset = 0;
@@ -191,26 +197,28 @@ namespace NexusDownloader.UI
             
             while (true)
             {
-                var pages = await LoadPagesBatch(http, offset, count, authorId);
+                var pages = await LoadPagesBatch(offset, count, authorId);
 
                 if (pages.All(p => p == null || !p.Contains("thumbnailUrl")))
                     break;
 
                 foreach (var json in pages)
-                    ExtractAndQueueDownloads(http, json, folder, known, existing);
+                    ExtractAndQueueDownloads(json, folder, known, existing);
 
                 offset += count * 6;
             }
         }
 
-        private async Task<string?[]> LoadPagesBatch(HttpClient http, int offset, int count, string authorId)
+        private async Task<string?[]> LoadPagesBatch(int offset, int count, string authorId)
         {
-            var batch = new List<Task<string?>>();
+            if (_http == null)
+                return Array.Empty<string?>();
 
+            var batch = new List<Task<string?>>();
             string? gameId = (GameBox.SelectedItem as GameFacet)?.Id;
 
             for (int i = 0; i < 6; i++)
-                batch.Add(_media.GetMediaPage(http, offset + i * count, count, authorId, gameId));
+                batch.Add(_media.GetMediaPage(_http, offset + i * count, count, authorId, gameId));
 
             var pages = await Task.WhenAll(batch);
 
@@ -220,8 +228,8 @@ namespace NexusDownloader.UI
             return pages;
         }
 
-        private void ExtractAndQueueDownloads(System.Net.Http.HttpClient http, string? json, string folder,
-            HashSet<string> known, HashSet<string> existing)
+        private void ExtractAndQueueDownloads(string? json, string folder,
+    HashSet<string> known, HashSet<string> existing)
         {
             if (string.IsNullOrEmpty(json))
                 return;
@@ -261,32 +269,51 @@ namespace NexusDownloader.UI
 
                 Interlocked.Increment(ref _activeDownloads);
 
-                _ = DownloadWrapper(http, url, Path.Combine(folder, id));
+                _ = DownloadWrapper(url, Path.Combine(folder, id));
             }
         }
 
-        private async Task DownloadWrapper(HttpClient http, string url, string file)
+        private async Task DownloadWrapper(string url, string file)
         {
-            var downloader = _downloader;
+            if (_http == null)
+                return;
 
+            var downloader = _downloader;
             if (downloader == null)
                 return;
 
             try
             {
-                await downloader.Download(http, url, file);
+                await downloader.Download(_http!, url, file);
 
                 if (downloader.Downloaded % 50 == 0)
                     Log($"saved {downloader.Downloaded}/{_totalImages}  delay={downloader.CurrentDelay}");
-
+                if (downloader.Downloaded % 120 == 0 && Interlocked.Exchange(ref _burstGuard, 1) == 0)
+                {
+                    Log("Burst pause...");
+                    await Task.Delay(4000 + Random.Shared.Next(2000));
+                    Interlocked.Exchange(ref _burstGuard, 0);
+                }
                 if (downloader.CurrentDelay >= 240)
                     await Task.Delay(1200 + Random.Shared.Next(400));
 
-                // глобальный анти-stall cooldown
-                if (downloader.CurrentDelay >= 240 && Volatile.Read(ref _activeDownloads) < 6)
+                // глобальный анти-stall cooldown + защита от частых reset
+                if (downloader.CurrentDelay >= 240 &&
+    Volatile.Read(ref _activeDownloads) < 6 &&
+    Interlocked.Exchange(ref _clientResetGuard, 1) == 0)
                 {
-                    Log("CDN cooldown...");
-                    await Task.Delay(5000);
+                    try
+                    {
+                        Log("CDN cooldown...");
+                        await Task.Delay(5000);
+
+                        await RecreateClient(_http!);
+                        _lastClientReset = DateTime.UtcNow;
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _clientResetGuard, 0);
+                    }
                 }
 
                 _adaptiveLimiter.Update(downloader.CurrentDelay);
@@ -308,6 +335,17 @@ namespace NexusDownloader.UI
             string folder = Path.Combine(Environment.CurrentDirectory, "Images");
             Directory.CreateDirectory(folder);
             return folder;
+        }
+
+        private async Task<HttpClient> RecreateClient(HttpClient old)
+        {
+            await Task.Delay(300);
+            try { old.Dispose(); } catch { }
+
+            Log("Recreating HttpClient...");
+
+            _http = await _cookieSession.CreateHttpClientAsync();
+            return _http;
         }
 
         private HashSet<string> GetExistingFiles(string folder)
@@ -404,7 +442,7 @@ namespace NexusDownloader.UI
         {
             try
             {
-                string temp = Path.Combine(AppContext.BaseDirectory, "Temp", author);
+                string temp = Path.Combine(AppContext.BaseDirectory, "Temp", game, author);
 
                 if (Directory.Exists(temp))
                     Directory.Delete(temp, true);

@@ -70,7 +70,7 @@ namespace NexusDownloader.Download
 
                         lock (_adaptiveLock)
                         {
-                            if (sw.ElapsedMilliseconds > 1200)
+                            if (sw.ElapsedMilliseconds > 900)
                             {
                                 _slowResponses++;
                                 _fastResponses = 0;

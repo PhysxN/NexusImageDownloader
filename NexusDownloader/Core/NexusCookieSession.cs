@@ -12,7 +12,7 @@ namespace NexusDownloader.Core
     public class NexusCookieSession
     {
         private readonly WebView2 _web;
-        private bool _initialized;
+        private string? _cachedUa;
 
         public NexusCookieSession(WebView2 web)
         {
@@ -46,10 +46,14 @@ namespace NexusDownloader.Core
             }
 
             var http = new HttpClient(handler);
-            var ua = await _web.ExecuteScriptAsync("navigator.userAgent");
-            ua = ua.Trim('"');
+            http.Timeout = TimeSpan.FromSeconds(40);
 
-            http.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+            if (_cachedUa == null)
+            {
+                _cachedUa = (await _web.ExecuteScriptAsync("navigator.userAgent")).Trim('"');
+            }
+
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(_cachedUa);
 
             http.DefaultRequestHeaders.Referrer = new Uri("https://www.nexusmods.com/");
             http.DefaultRequestVersion = HttpVersion.Version20;
@@ -63,14 +67,7 @@ namespace NexusDownloader.Core
                 return false;
 
             var cookies = await _web.CoreWebView2.CookieManager    .GetCookiesAsync("https://www.nexusmods.com");
-
-            bool hasSession = cookies.Any(c =>
-                                    c.Name == "nexusmods_session" ||
-                                    c.Name == "cf_clearance");
-
-            if (!hasSession)
-                return false;            
-
+              
             try
             {
                 return cookies.Any(c =>
