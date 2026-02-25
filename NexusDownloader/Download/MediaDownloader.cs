@@ -15,6 +15,12 @@ namespace NexusDownloader.Download
         private readonly SemaphoreSlim _convertLimiter = new SemaphoreSlim(4);
         private int _delayMs = 0;
         private int _maxDelayMs = 0;
+        private int _latencyStall;
+        private long _lastLatency;
+        private readonly object _latLock = new object();
+
+        public int LastLatency => (int)_lastLatency;
+        public bool IsLatencyStalled => _latencyStall >= 6;
         public int MaxDelay => _maxDelayMs;
         private int _slowResponses = 0;
         private int _fastResponses = 0;
@@ -42,6 +48,7 @@ namespace NexusDownloader.Download
         public async Task Download(HttpClient http, string url, string file)
         {
             await _limiter.WaitAsync();
+            await Task.Delay(Random.Shared.Next(5, 18));
             bool limiterReleased = false;
 
             string? tempPath = null;
@@ -67,6 +74,16 @@ namespace NexusDownloader.Download
                             cts.Token);
 
                         sw.Stop();
+
+                        lock (_latLock)
+                        {
+                            _lastLatency = sw.ElapsedMilliseconds;
+
+                            if (sw.ElapsedMilliseconds > 1800)
+                                _latencyStall = Math.Min(_latencyStall + 1, 10);
+                            else
+                                _latencyStall = Math.Max(0, _latencyStall - 1);
+                        }
 
                         lock (_adaptiveLock)
                         {
@@ -168,10 +185,8 @@ namespace NexusDownloader.Download
                     {
                         await ImageConverter.ConvertWebpToJpg(tempFile);
 
+                        string jpg = Path.ChangeExtension(tempFile, ".jpg");
                         string finalPath = Path.ChangeExtension(targetBase, ".jpg");
-                        File.Move(Path.ChangeExtension(tempFile, ".jpg"), finalPath, true);
-
-                        var jpg = Path.ChangeExtension(tempFile, ".jpg");
 
                         if (File.Exists(jpg))
                             File.Move(jpg, finalPath, true);

@@ -32,7 +32,9 @@ namespace NexusDownloader.UI
         private HttpClient? _http;
         private DateTime _lastClientReset = DateTime.MinValue;
         private int _burstGuard;
+        private int _latencyGuard;
         private int _clientResetGuard;
+        private int _burstCounter;
 
         public MainWindow()
         {
@@ -284,22 +286,43 @@ namespace NexusDownloader.UI
 
             try
             {
+                await Task.Delay(Random.Shared.Next(8, 35));
                 await downloader.Download(_http!, url, file);
 
                 if (downloader.Downloaded % 50 == 0)
                     Log($"saved {downloader.Downloaded}/{_totalImages}  delay={downloader.CurrentDelay}");
-                if (downloader.Downloaded % 120 == 0 && Interlocked.Exchange(ref _burstGuard, 1) == 0)
+                int burst = GetDynamicBurst(downloader.CurrentDelay);
+                int c = Interlocked.Increment(ref _burstCounter);
+
+                if (c >= burst && Interlocked.Exchange(ref _burstGuard, 1) == 0)
                 {
-                    Log("Burst pause...");
-                    await Task.Delay(4000 + Random.Shared.Next(2000));
+                    Interlocked.Exchange(ref _burstCounter, 0);
+
+                    int pause =
+                        downloader.CurrentDelay < 80 ? 1200 :
+                        downloader.CurrentDelay < 150 ? 2200 :
+                        downloader.CurrentDelay < 210 ? 3200 :
+                        4500;
+
+                    Log($"Burst pause {pause} ms (delay={downloader.CurrentDelay})");
+
+                    await Task.Delay(pause + Random.Shared.Next(400));
+
+                    _adaptiveLimiter.Update(downloader.CurrentDelay);
                     Interlocked.Exchange(ref _burstGuard, 0);
                 }
                 if (downloader.CurrentDelay >= 240)
                     await Task.Delay(1200 + Random.Shared.Next(400));
+                if (downloader.IsLatencyStalled && Interlocked.Exchange(ref _latencyGuard, 1) == 0)
+                {
+                    Log($"Latency stall {downloader.LastLatency} ms → cooldown");
+                    await Task.Delay(3500 + Random.Shared.Next(1500));
+                    Interlocked.Exchange(ref _latencyGuard, 0);
+                }
 
                 // глобальный анти-stall cooldown + защита от частых reset
                 if (downloader.CurrentDelay >= 240 &&
-    Volatile.Read(ref _activeDownloads) < 6 &&
+    Volatile.Read(ref _activeDownloads) <= 2 &&
     Interlocked.Exchange(ref _clientResetGuard, 1) == 0)
                 {
                     try
@@ -340,7 +363,11 @@ namespace NexusDownloader.UI
         private async Task<HttpClient> RecreateClient(HttpClient old)
         {
             await Task.Delay(300);
-            try { old.Dispose(); } catch { }
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(15000);
+                try { old.Dispose(); } catch { }
+            });
 
             Log("Recreating HttpClient...");
 
@@ -381,6 +408,14 @@ namespace NexusDownloader.UI
 
             // иначе считаем, что это ник
             return input;
+        }
+
+        private int GetDynamicBurst(int delay)
+        {
+            if (delay < 80) return 200;
+            if (delay < 150) return 140;
+            if (delay < 210) return 80;
+            return 45;
         }
 
         private string BuildMediaUrl(int page)
